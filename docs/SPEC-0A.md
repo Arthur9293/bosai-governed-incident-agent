@@ -10,11 +10,13 @@ Prove one narrow Professional Agents workflow before expanding scope:
 
 1. Investigation and proposal tools are read-only.
 2. The model cannot mint Human GO.
-3. A permit is bound to proposal id, action, target, state version, and state digest.
-4. Missing, mismatched, drifted, or replayed permits fail closed.
-5. A permit is consumed before the mutation attempt.
-6. Execution is followed by an explicit readback.
-7. The demo runtime is synthetic until a later gate authorizes AWS deployment.
+3. Every Human GO issuance creates a unique event id and a distinct permit id.
+4. A permit is bound to proposal id, action, target, state version, and state digest.
+5. Consumed permit records are never overwritten or resurrected by re-issuance.
+6. Missing, mismatched, drifted, or replayed permits fail closed.
+7. A permit is consumed before the mutation attempt.
+8. Execution is followed by an explicit readback.
+9. The demo runtime is synthetic until a later gate authorizes AWS deployment.
 
 ## Strands integration
 
@@ -28,8 +30,8 @@ The mutating tool accepts only an externally issued permit. The permit registry 
 
 ## 0A acceptance
 
-- deterministic governance core implemented;
-- 7 governance tests pass;
+- synthetic governance runtime and control outcomes implemented;
+- 10 governance tests pass;
 - CI defined;
 - Strands tool wiring present;
 - no AWS deployment;

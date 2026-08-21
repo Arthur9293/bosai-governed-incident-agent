@@ -47,6 +47,7 @@ class RemediationProposal:
 @dataclass
 class ApprovalPermit:
     permit_id: str
+    human_go_event_id: str
     proposal_id: str
     action: str
     target: str

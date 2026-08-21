@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from hashlib import sha256
+from uuid import uuid4
 
 from .models import ApprovalPermit, ExecutionReceipt, IncidentSnapshot, RemediationProposal
 from .runtime import SyntheticIncidentRuntime
@@ -47,7 +48,9 @@ class PermitRegistry:
         if proposal.requires_human_go and not human_authorized:
             raise GovernanceError("HUMAN_GO_REQUIRED")
 
+        human_go_event_id = f"go-{uuid4().hex}"
         payload = {
+            "human_go_event_id": human_go_event_id,
             "proposal_id": proposal.proposal_id,
             "action": proposal.action,
             "target": proposal.target,
@@ -55,8 +58,12 @@ class PermitRegistry:
             "expected_snapshot_digest": proposal.expected_snapshot_digest,
         }
         permit_id = _stable_id("permit", payload)
+        if permit_id in self._permits:
+            raise GovernanceError("PERMIT_ID_COLLISION")
+
         permit = ApprovalPermit(
             permit_id=permit_id,
+            human_go_event_id=human_go_event_id,
             proposal_id=proposal.proposal_id,
             action=proposal.action,
             target=proposal.target,

@@ -23,6 +23,9 @@ class SyntheticIncidentRuntime:
         self._state["version"] += 1
         self._state["details"] = "state changed after approval"
 
+    def inject_digest_drift(self) -> None:
+        self._state["details"] = "state content changed without a version bump"
+
     def apply(self, action: str, target: str) -> IncidentSnapshot:
         if target != self._state["service_id"]:
             raise ValueError("target mismatch")
