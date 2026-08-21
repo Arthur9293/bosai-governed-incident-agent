@@ -82,3 +82,13 @@ python scripts/run_live_0b.py
 It produces `evidence/0b-live-strands-evidence.json`. The packet contains model/tool metrics and
 synthetic before/after readback, but no credentials or AWS account identifiers. GitHub CI stays
 credential-free; AgentCore deployment is intentionally deferred to a later gate.
+
+## 0C — Amazon Bedrock AgentCore deployment
+
+0C deploys the same governed Strands incident workflow proven in 0B to Amazon Bedrock AgentCore
+Runtime. The deployed endpoint remains deliberately constrained to synthetic incident handling and
+an authority-boundary probe. It has no execution tool and cannot mint a Human GO permit.
+
+Deployment uses the current AgentCore CLI with a CodeZip runtime in `eu-central-1`; account-bound
+deployment targets and AgentCore local state are intentionally gitignored. Public evidence is
+redacted and binds private AWS identifiers by SHA-256 rather than publishing account IDs or ARNs.

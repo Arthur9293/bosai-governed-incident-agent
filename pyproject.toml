@@ -9,6 +9,7 @@ description = "A governed Strands agent for incident investigation and bounded r
 requires-python = ">=3.10"
 dependencies = [
   "strands-agents>=1.0.0,<2.0.0",
+  "bedrock-agentcore>=1.20.0,<1.21.0",
 ]
 
 [project.optional-dependencies]
