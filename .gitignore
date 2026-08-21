@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# BOSAI 0C — local AgentCore deployment state / account-bound configuration
+.agentcore-build/
+agentcore/aws-targets.json
+agentcore/.cli/
+agentcore/cdk/
+cdk.out/
