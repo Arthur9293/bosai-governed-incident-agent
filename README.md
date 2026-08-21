@@ -64,3 +64,21 @@ This is a new hackathon repository and implementation. BOSAI as a name and broad
 ## License
 
 MIT.
+
+## 0B — Live Strands core loop
+
+0B adds a real Amazon Bedrock-backed Strands invocation while keeping the live model's tool surface
+strictly read-only. The model must inspect the synthetic incident with `read_service_state`, create
+one bounded proposal with `draft_bounded_remediation`, and stop at `HUMAN_GO_REQUIRED`.
+
+The evidence run is explicit and operator-gated:
+
+```bash
+AWS_REGION=<your-region> \
+STRANDS_MODEL_ID=global.anthropic.claude-sonnet-4-6 \
+python scripts/run_live_0b.py
+```
+
+It produces `evidence/0b-live-strands-evidence.json`. The packet contains model/tool metrics and
+synthetic before/after readback, but no credentials or AWS account identifiers. GitHub CI stays
+credential-free; AgentCore deployment is intentionally deferred to a later gate.
