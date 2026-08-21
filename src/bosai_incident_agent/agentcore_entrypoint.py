@@ -14,6 +14,7 @@ from .live_agent import (
     build_live_read_only_agent,
 )
 from .runtime import SyntheticIncidentRuntime
+from .source import IncidentEvidenceSource
 
 app = BedrockAgentCoreApp()
 
@@ -67,7 +68,7 @@ def _contains_boundary_marker(message: Any) -> bool:
 def run_controlled_mode(
     mode: str,
     *,
-    runtime_factory: Callable[[], SyntheticIncidentRuntime] = SyntheticIncidentRuntime,
+    runtime_factory: Callable[[], IncidentEvidenceSource] = SyntheticIncidentRuntime,
     agent_builder: Callable[..., Any] = build_live_read_only_agent,
 ) -> dict[str, Any]:
     if mode == INCIDENT_MODE:

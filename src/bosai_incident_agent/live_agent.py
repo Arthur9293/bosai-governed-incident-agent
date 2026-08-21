@@ -8,7 +8,7 @@ from strands.models import BedrockModel
 
 from .governance import propose
 from .models import RemediationProposal
-from .runtime import SyntheticIncidentRuntime
+from .source import IncidentEvidenceSource
 
 LIVE_READ_ONLY_TOOL_NAMES = ("read_service_state", "draft_bounded_remediation")
 FORBIDDEN_LIVE_TOOL_NAMES = ("execute_with_permit",)
@@ -40,7 +40,7 @@ class LiveReadOnlyAgentBundle:
 
 
 def build_live_read_only_agent(
-    runtime: SyntheticIncidentRuntime,
+    runtime: IncidentEvidenceSource,
     *,
     model_id: str,
     region_name: str,
