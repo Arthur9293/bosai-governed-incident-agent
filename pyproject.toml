@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bosai-governed-incident-agent"
+version = "0.1.0"
+description = "A governed Strands agent for incident investigation and bounded remediation."
+requires-python = ">=3.10"
+dependencies = [
+  "strands-agents>=1.0.0,<2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9.0",
+  "ruff>=0.6,<1.0",
+]
+
+[project.scripts]
+bosai-incident-demo = "bosai_incident_agent.app:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
