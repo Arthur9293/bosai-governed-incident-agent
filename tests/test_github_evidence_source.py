@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from hashlib import sha1
+from inspect import signature
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -11,6 +12,8 @@ import pytest
 from bosai_incident_agent.github_evidence_source import (
     EXPECTED_BLOB_SHA,
     EXPECTED_SNAPSHOT_DIGEST,
+    GITHUB_API_URL,
+    SOURCE_COMMIT,
     SOURCE_PATH,
     GitHubEvidenceSourceError,
     GitHubImmutableEvidenceSource,
@@ -122,6 +125,25 @@ def test_successful_read_is_cached_and_performs_exactly_one_get() -> None:
     assert request.get_method() == "GET"
 
 
+
+def test_source_request_is_exactly_commit_pinned_and_not_user_selectable() -> None:
+    assert SOURCE_COMMIT == "03735eff72052facd215d3ab39b0e73bd57dd3ef"
+    assert GITHUB_API_URL.endswith(f"?ref={SOURCE_COMMIT}")
+
+    constructor_parameters = signature(GitHubImmutableEvidenceSource).parameters
+    assert "source_commit" not in constructor_parameters
+    assert "repository" not in constructor_parameters
+    assert "path" not in constructor_parameters
+
+    opener = RecordingOpener(github_envelope(real_local_content()))
+    source = GitHubImmutableEvidenceSource(opener=opener)
+    source.read()
+
+    request, _timeout = opener.calls[0]
+    assert request.full_url == GITHUB_API_URL
+    assert request.full_url.endswith(f"?ref={SOURCE_COMMIT}")
+
+
 def test_wrong_path_fails_closed() -> None:
     payload = github_envelope(
         real_local_content(),
@@ -167,6 +189,41 @@ def test_missing_required_incident_field_fails_closed(monkeypatch) -> None:
     )
 
     with pytest.raises(GitHubEvidenceSourceError, match="INCOMPLETE_EVIDENCE"):
+        source.read()
+
+
+
+def test_invalid_field_type_fails_closed(monkeypatch) -> None:
+    document = json.loads(real_local_content())
+    document["runtime_readback"]["before"]["version"] = "1"
+    content = json.dumps(document, sort_keys=True).encode("utf-8")
+
+    import bosai_incident_agent.github_evidence_source as module
+
+    monkeypatch.setattr(module, "EXPECTED_BLOB_SHA", git_blob_sha(content))
+
+    source = GitHubImmutableEvidenceSource(
+        opener=RecordingOpener(github_envelope(content))
+    )
+
+    with pytest.raises(GitHubEvidenceSourceError, match="INVALID_FIELD_TYPE"):
+        source.read()
+
+
+def test_invalid_health_value_fails_closed(monkeypatch) -> None:
+    document = json.loads(real_local_content())
+    document["runtime_readback"]["before"]["health"] = "unknown"
+    content = json.dumps(document, sort_keys=True).encode("utf-8")
+
+    import bosai_incident_agent.github_evidence_source as module
+
+    monkeypatch.setattr(module, "EXPECTED_BLOB_SHA", git_blob_sha(content))
+
+    source = GitHubImmutableEvidenceSource(
+        opener=RecordingOpener(github_envelope(content))
+    )
+
+    with pytest.raises(GitHubEvidenceSourceError, match="INVALID_HEALTH_VALUE"):
         source.read()
 
 
@@ -228,6 +285,19 @@ def test_http_failures_fail_closed(status_code: int, expected_error: str) -> Non
     source = GitHubImmutableEvidenceSource(opener=opener)
 
     with pytest.raises(GitHubEvidenceSourceError, match=expected_error):
+        source.read()
+
+    assert source.network_get_count == 1
+
+
+
+def test_timeout_fails_closed() -> None:
+    def opener(request, *, timeout: float):
+        raise TimeoutError("timed out")
+
+    source = GitHubImmutableEvidenceSource(opener=opener)
+
+    with pytest.raises(GitHubEvidenceSourceError, match="HTTP_TIMEOUT"):
         source.read()
 
     assert source.network_get_count == 1
