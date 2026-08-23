@@ -150,6 +150,20 @@
     },
     "unchanged": true
   },
+  "review_hardening": {
+    "current_test_file_sha256": "9069d88a5f654dd644caef0b308f0038e4ff0ccf7a06a083c055193e23d65715",
+    "frozen_fail_closed_matrix_completed": [
+      "INVALID_FIELD_TYPE",
+      "INVALID_HEALTH_VALUE",
+      "HTTP_TIMEOUT",
+      "EXACT_SERVER_OWNED_COMMIT_PIN"
+    ],
+    "live_proof_rerun_required": false,
+    "milestone": "0E_R1_R2_REVIEW_HARDENING",
+    "previous_canonical_packet_sha256": "7b67ed3910db6c8103b505d394bf763582ec67cc68595200107e4d11e4d51ba5",
+    "runtime_files_changed": false,
+    "test_only_commit_sha": "c9ea5ed7a19fcaa0241ad68f47588ae7c7f4edcf"
+  },
   "schema_version": "1.0",
   "source": {
     "blob_sha": "8a88a4b3f828acfea48810a70f81a579173e235d",
@@ -206,12 +220,12 @@
   "verification": {
     "adapter_tests": {
       "failed": 0,
-      "passed": 14
+      "passed": 18
     },
     "aws_caller_class": "NON_ROOT_ASSUMED_ROLE",
     "full_tests": {
       "failed": 0,
-      "passed": 42,
+      "passed": 46,
       "warning_class": "KNOWN_BEDROCK_AGENTCORE_PYDANTIC_DEPRECATION",
       "warnings": 1
     },
