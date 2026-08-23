@@ -531,3 +531,160 @@ def test_naive_provenance_timestamp_fails_closed() -> None:
             "test:source",
             retrieved_at_utc="2026-08-23T12:00:00",
         )
+
+
+def test_non_temporal_claim_difference_remains_conflict() -> None:
+    archival = observation(
+        "archive",
+        freshness_class="IMMUTABLE_ARCHIVAL_PROOF",
+        claims=(EvidenceClaim("source_commit", "aaaaaaaa"),),
+        observed_at_utc="2026-08-23T10:00:00+00:00",
+        normalized_digest=DIGEST_A,
+    )
+    current = observation(
+        "current",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        freshness_class="FRESH",
+        confidence_class="AUTHORIZED_BOUNDED_READ",
+        claims=(EvidenceClaim("source_commit", "bbbbbbbb"),),
+        observed_at_utc="2026-08-23T12:00:00+00:00",
+        normalized_digest=DIGEST_B,
+    )
+
+    result = correlate_evidence((archival, current))
+
+    assert result.status == CORRELATION_STATUS_CONFLICT
+    assert "claim:source_commit" in result.conflicts
+    assert result.temporal_baselines == ()
+    assert result.correlation_gate_passed is False
+
+
+def test_temporal_allowlisted_claim_can_form_baseline() -> None:
+    archival = observation(
+        "archive",
+        freshness_class="IMMUTABLE_ARCHIVAL_PROOF",
+        claims=(EvidenceClaim("health", "degraded"),),
+        observed_at_utc="2026-08-23T10:00:00+00:00",
+        normalized_digest=DIGEST_A,
+    )
+    current = observation(
+        "current",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        freshness_class="FRESH",
+        confidence_class="AUTHORIZED_BOUNDED_READ",
+        claims=(EvidenceClaim("health", "healthy"),),
+        observed_at_utc="2026-08-23T12:00:00+00:00",
+        normalized_digest=DIGEST_B,
+    )
+
+    result = correlate_evidence((archival, current))
+
+    assert result.status == CORRELATION_STATUS_COMPLEMENTARY
+    assert result.conflicts == ()
+    assert result.temporal_baselines == ("health",)
+    assert result.correlation_gate_passed is True
+
+
+def test_same_physical_source_with_different_kind_fails_closed() -> None:
+    source_a = observation(
+        "source-a",
+        source_kind="GITHUB_IMMUTABLE",
+        source_reference="physical:source-001",
+        normalized_digest=DIGEST_A,
+    )
+    source_b = observation(
+        "source-b",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        source_reference="physical:source-001",
+        confidence_class="AUTHORIZED_BOUNDED_READ",
+        normalized_digest=DIGEST_B,
+    )
+
+    with pytest.raises(
+        CorrelationError,
+        match="DUPLICATE_PROVENANCE_IDENTITY",
+    ):
+        correlate_evidence((source_a, source_b))
+
+
+def test_physical_source_provider_identity_is_case_insensitive() -> None:
+    source_a = EvidenceObservation(
+        source_id="source-a",
+        source_kind="GITHUB_IMMUTABLE",
+        incident_id="inc-001",
+        service_id="checkout-worker",
+        claims=(EvidenceClaim("health", "degraded"),),
+        freshness_class="FRESH",
+        confidence_class="VERIFIED_INTEGRITY",
+        provenance=EvidenceProvenance(
+            source_provider="GitHub",
+            source_reference="physical:source-001",
+            provenance_label="TEST_PROVENANCE",
+            retrieved_at_utc="2026-08-23T12:00:00+00:00",
+            content_digest=DIGEST_C,
+        ),
+        normalized_digest=DIGEST_A,
+        observed_at_utc="2026-08-23T12:00:00+00:00",
+    )
+    source_b = EvidenceObservation(
+        source_id="source-b",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        incident_id="inc-001",
+        service_id="checkout-worker",
+        claims=(EvidenceClaim("health", "degraded"),),
+        freshness_class="FRESH",
+        confidence_class="AUTHORIZED_BOUNDED_READ",
+        provenance=EvidenceProvenance(
+            source_provider="github",
+            source_reference="physical:source-001",
+            provenance_label="TEST_PROVENANCE",
+            retrieved_at_utc="2026-08-23T12:00:00+00:00",
+            content_digest=DIGEST_D,
+        ),
+        normalized_digest=DIGEST_B,
+        observed_at_utc="2026-08-23T12:00:00+00:00",
+    )
+
+    with pytest.raises(
+        CorrelationError,
+        match="DUPLICATE_PROVENANCE_IDENTITY",
+    ):
+        correlate_evidence((source_a, source_b))
+
+
+def test_direct_correlated_result_construction_is_forbidden() -> None:
+    from bosai_incident_agent.correlation import CorrelatedEvidenceSet
+
+    with pytest.raises(
+        CorrelationError,
+        match="DIRECT_CORRELATED_RESULT_CONSTRUCTION_FORBIDDEN",
+    ):
+        CorrelatedEvidenceSet(
+            correlation_key="incident:inc-001",
+            observations=(),
+            status=CORRELATION_STATUS_CONSISTENT,
+            conflicts=(),
+            stale_sources=(),
+            missing_evidence=(),
+            temporal_baselines=(),
+            correlation_digest=DIGEST_A,
+        )
+
+
+def test_internal_factory_rejects_invalid_proposal_eligible_result() -> None:
+    from bosai_incident_agent.correlation import CorrelatedEvidenceSet
+
+    with pytest.raises(
+        CorrelationError,
+        match="INVALID_PROPOSAL_ELIGIBLE_RESULT",
+    ):
+        CorrelatedEvidenceSet._create(
+            correlation_key="incident:inc-001",
+            observations=(),
+            status=CORRELATION_STATUS_CONSISTENT,
+            conflicts=(),
+            stale_sources=(),
+            missing_evidence=(),
+            temporal_baselines=(),
+            correlation_digest=DIGEST_A,
+        )

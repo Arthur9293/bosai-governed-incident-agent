@@ -45,6 +45,19 @@ PROPOSAL_ELIGIBLE_CONFIDENCE_CLASSES = frozenset(
     }
 )
 
+TEMPORAL_CLAIM_FIELDS = frozenset(
+    {
+        "health",
+        "error_rate",
+        "review_status",
+        "risk_label",
+        "queue_state",
+        "blocker_label",
+        "next_safe_state",
+        "freshness_state",
+    }
+)
+
 FORBIDDEN_CLAIM_FIELDS = frozenset(
     {
         "raw_incident_body",
@@ -280,7 +293,7 @@ class EvidenceObservation:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class CorrelatedEvidenceSet:
     correlation_key: str
     observations: tuple[EvidenceObservation, ...]
@@ -290,6 +303,81 @@ class CorrelatedEvidenceSet:
     missing_evidence: tuple[str, ...]
     temporal_baselines: tuple[str, ...]
     correlation_digest: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise CorrelationError(
+            "DIRECT_CORRELATED_RESULT_CONSTRUCTION_FORBIDDEN"
+        )
+
+    @classmethod
+    def _create(
+        cls,
+        *,
+        correlation_key: str,
+        observations: tuple[EvidenceObservation, ...],
+        status: str,
+        conflicts: tuple[str, ...],
+        stale_sources: tuple[str, ...],
+        missing_evidence: tuple[str, ...],
+        temporal_baselines: tuple[str, ...],
+        correlation_digest: str,
+    ) -> CorrelatedEvidenceSet:
+        valid_statuses = {
+            CORRELATION_STATUS_CONSISTENT,
+            CORRELATION_STATUS_COMPLEMENTARY,
+            CORRELATION_STATUS_STALE,
+            CORRELATION_STATUS_INSUFFICIENT,
+            CORRELATION_STATUS_CONFLICT,
+        }
+
+        if status not in valid_statuses:
+            raise CorrelationError("INVALID_CORRELATED_RESULT_STATUS")
+
+        if status in {
+            CORRELATION_STATUS_CONSISTENT,
+            CORRELATION_STATUS_COMPLEMENTARY,
+        } and (
+            len(observations) < 2
+            or conflicts
+            or stale_sources
+            or missing_evidence
+        ):
+            raise CorrelationError(
+                "INVALID_PROPOSAL_ELIGIBLE_RESULT"
+            )
+
+        if status == CORRELATION_STATUS_CONFLICT and not conflicts:
+            raise CorrelationError("INVALID_CONFLICT_RESULT")
+
+        if status == CORRELATION_STATUS_STALE and not stale_sources:
+            raise CorrelationError("INVALID_STALE_RESULT")
+
+        if (
+            status == CORRELATION_STATUS_INSUFFICIENT
+            and not missing_evidence
+        ):
+            raise CorrelationError("INVALID_INSUFFICIENT_RESULT")
+
+        instance = object.__new__(cls)
+
+        object.__setattr__(instance, "correlation_key", correlation_key)
+        object.__setattr__(instance, "observations", observations)
+        object.__setattr__(instance, "status", status)
+        object.__setattr__(instance, "conflicts", conflicts)
+        object.__setattr__(instance, "stale_sources", stale_sources)
+        object.__setattr__(instance, "missing_evidence", missing_evidence)
+        object.__setattr__(
+            instance,
+            "temporal_baselines",
+            temporal_baselines,
+        )
+        object.__setattr__(
+            instance,
+            "correlation_digest",
+            correlation_digest,
+        )
+
+        return instance
 
     @property
     def proposal_allowed(self) -> bool:
@@ -322,11 +410,10 @@ def _correlation_key(
 
 def _provenance_identity(
     observation: EvidenceObservation,
-) -> tuple[str, str, str]:
+) -> tuple[str, str]:
     return (
-        observation.source_kind,
-        observation.provenance.source_provider,
-        observation.provenance.source_reference,
+        observation.provenance.source_provider.strip().casefold(),
+        observation.provenance.source_reference.strip(),
     )
 
 
@@ -435,6 +522,10 @@ def correlate_evidence(
             }
 
             if len(distinct_values) <= 1:
+                continue
+
+            if field not in TEMPORAL_CLAIM_FIELDS:
+                conflicts_list.append(f"claim:{field}")
                 continue
 
             field_conflict = False
@@ -583,7 +674,7 @@ def correlate_evidence(
         }
     )
 
-    return CorrelatedEvidenceSet(
+    return CorrelatedEvidenceSet._create(
         correlation_key=correlation_key,
         observations=ordered_observations,
         status=status,
