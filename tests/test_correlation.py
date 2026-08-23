@@ -25,12 +25,13 @@ def provenance(
     source_reference: str,
     *,
     content_digest: str = DIGEST_A,
+    retrieved_at_utc: str = "2026-08-23T12:00:00+00:00",
 ) -> EvidenceProvenance:
     return EvidenceProvenance(
         source_provider="TEST",
         source_reference=source_reference,
         provenance_label="TEST_PROVENANCE",
-        retrieved_at_utc="2026-08-23T12:00:00+00:00",
+        retrieved_at_utc=retrieved_at_utc,
         content_digest=content_digest,
     )
 
@@ -47,6 +48,8 @@ def observation(
     freshness_class: str = "FRESH",
     confidence_class: str = "VERIFIED_INTEGRITY",
     normalized_digest: str = DIGEST_B,
+    source_reference: str | None = None,
+    observed_at_utc: str | None = "2026-08-23T12:00:00+00:00",
 ) -> EvidenceObservation:
     return EvidenceObservation(
         source_id=source_id,
@@ -57,11 +60,11 @@ def observation(
         freshness_class=freshness_class,
         confidence_class=confidence_class,
         provenance=provenance(
-            f"test:{source_id}",
+            source_reference or f"test:{source_id}",
             content_digest=DIGEST_C,
         ),
         normalized_digest=normalized_digest,
-        observed_at_utc="2026-08-23T12:00:00+00:00",
+        observed_at_utc=observed_at_utc,
     )
 
 
@@ -90,7 +93,7 @@ def test_matching_sources_are_consistent() -> None:
     assert result.status == CORRELATION_STATUS_CONSISTENT
     assert result.conflicts == ()
     assert result.proposal_allowed is True
-    assert result.human_review_required is False
+    assert result.correlation_review_required is False
 
 
 def test_compatible_non_overlapping_claims_are_complementary() -> None:
@@ -126,7 +129,7 @@ def test_different_incident_ids_fail_as_source_conflict() -> None:
     assert result.status == CORRELATION_STATUS_CONFLICT
     assert "incident_id" in result.conflicts
     assert result.proposal_allowed is False
-    assert result.human_review_required is True
+    assert result.correlation_review_required is True
 
 
 def test_different_known_service_ids_fail_as_source_conflict() -> None:
@@ -176,7 +179,7 @@ def test_stale_source_requires_review_and_blocks_proposal() -> None:
     assert result.status == CORRELATION_STATUS_STALE
     assert result.stale_sources == ("source-b",)
     assert result.proposal_allowed is False
-    assert result.human_review_required is True
+    assert result.correlation_review_required is True
 
 
 def test_unknown_freshness_is_insufficient_evidence() -> None:
@@ -306,3 +309,225 @@ def test_conflict_takes_precedence_over_staleness() -> None:
     assert result.status == CORRELATION_STATUS_CONFLICT
     assert "claim:health" in result.conflicts
     assert result.proposal_allowed is False
+def test_duplicate_provenance_identity_fails_closed() -> None:
+    source_a = observation(
+        "alias-a",
+        source_reference="github:exact-source",
+        normalized_digest=DIGEST_A,
+    )
+    source_b = observation(
+        "alias-b",
+        source_reference="github:exact-source",
+        normalized_digest=DIGEST_B,
+    )
+
+    with pytest.raises(
+        CorrelationError,
+        match="DUPLICATE_PROVENANCE_IDENTITY",
+    ):
+        correlate_evidence((source_a, source_b))
+
+
+def test_empty_claims_are_insufficient_evidence() -> None:
+    source_a = observation(
+        "source-a",
+        claims=(),
+    )
+    source_b = observation(
+        "source-b",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        claims=(),
+        confidence_class="AUTHORIZED_BOUNDED_READ",
+    )
+
+    result = correlate_evidence((source_a, source_b))
+
+    assert result.status == CORRELATION_STATUS_INSUFFICIENT
+    assert "NO_INFORMATIVE_CLAIMS:source-a" in result.missing_evidence
+    assert "NO_INFORMATIVE_CLAIMS:source-b" in result.missing_evidence
+    assert result.proposal_allowed is False
+
+
+def test_null_claim_value_fails_closed() -> None:
+    with pytest.raises(
+        CorrelationError,
+        match="NULL_CLAIM_VALUE",
+    ):
+        EvidenceClaim("health", None)
+
+
+def test_empty_string_claim_value_fails_closed() -> None:
+    with pytest.raises(
+        CorrelationError,
+        match="EMPTY_CLAIM_VALUE",
+    ):
+        EvidenceClaim("health", "   ")
+
+
+def test_unknown_confidence_blocks_proposal() -> None:
+    source_a = observation("source-a")
+    source_b = observation(
+        "source-b",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        confidence_class="UNKNOWN",
+    )
+
+    result = correlate_evidence((source_a, source_b))
+
+    assert result.status == CORRELATION_STATUS_INSUFFICIENT
+    assert (
+        "CONFIDENCE_NOT_PROPOSAL_ELIGIBLE:source-b:UNKNOWN"
+        in result.missing_evidence
+    )
+    assert result.proposal_allowed is False
+
+
+def test_source_asserted_confidence_is_not_proposal_eligible() -> None:
+    source_a = observation("source-a")
+    source_b = observation(
+        "source-b",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        confidence_class="SOURCE_ASSERTED",
+    )
+
+    result = correlate_evidence((source_a, source_b))
+
+    assert result.status == CORRELATION_STATUS_INSUFFICIENT
+    assert (
+        "CONFIDENCE_NOT_PROPOSAL_ELIGIBLE:source-b:SOURCE_ASSERTED"
+        in result.missing_evidence
+    )
+    assert result.proposal_allowed is False
+
+
+def test_review_semantics_are_correlation_local_only() -> None:
+    source_a = observation(
+        "source-a",
+        normalized_digest=DIGEST_A,
+    )
+    source_b = observation(
+        "source-b",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        confidence_class="AUTHORIZED_BOUNDED_READ",
+        normalized_digest=DIGEST_B,
+    )
+
+    result = correlate_evidence((source_a, source_b))
+
+    assert result.status == CORRELATION_STATUS_CONSISTENT
+    assert result.correlation_gate_passed is True
+    assert result.correlation_review_required is False
+    assert not hasattr(result, "human_review_required")
+
+
+def test_archival_and_later_current_claim_form_temporal_baseline() -> None:
+    archival = observation(
+        "archive",
+        freshness_class="IMMUTABLE_ARCHIVAL_PROOF",
+        claims=(EvidenceClaim("health", "degraded"),),
+        observed_at_utc="2026-08-23T10:00:00+00:00",
+        normalized_digest=DIGEST_A,
+    )
+    current = observation(
+        "current",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        freshness_class="FRESH",
+        confidence_class="AUTHORIZED_BOUNDED_READ",
+        claims=(EvidenceClaim("health", "healthy"),),
+        observed_at_utc="2026-08-23T12:00:00+00:00",
+        normalized_digest=DIGEST_B,
+    )
+
+    result = correlate_evidence((archival, current))
+
+    assert result.status == CORRELATION_STATUS_COMPLEMENTARY
+    assert result.conflicts == ()
+    assert result.temporal_baselines == ("health",)
+    assert result.correlation_gate_passed is True
+
+
+def test_temporal_comparison_without_timestamps_requires_review() -> None:
+    archival = observation(
+        "archive",
+        freshness_class="IMMUTABLE_ARCHIVAL_PROOF",
+        claims=(EvidenceClaim("health", "degraded"),),
+        observed_at_utc=None,
+    )
+    current = observation(
+        "current",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        freshness_class="FRESH",
+        confidence_class="AUTHORIZED_BOUNDED_READ",
+        claims=(EvidenceClaim("health", "healthy"),),
+        observed_at_utc="2026-08-23T12:00:00+00:00",
+    )
+
+    result = correlate_evidence((archival, current))
+
+    assert result.status == CORRELATION_STATUS_INSUFFICIENT
+    assert (
+        "TEMPORAL_CONTEXT_MISSING:health"
+        in result.missing_evidence
+    )
+    assert result.correlation_gate_passed is False
+
+
+def test_invalid_temporal_order_is_source_conflict() -> None:
+    archival = observation(
+        "archive",
+        freshness_class="IMMUTABLE_ARCHIVAL_PROOF",
+        claims=(EvidenceClaim("health", "degraded"),),
+        observed_at_utc="2026-08-23T14:00:00+00:00",
+    )
+    current = observation(
+        "current",
+        source_kind="AGENT_ANALYST_AUTHORIZED_READ_ONLY",
+        freshness_class="FRESH",
+        confidence_class="AUTHORIZED_BOUNDED_READ",
+        claims=(EvidenceClaim("health", "healthy"),),
+        observed_at_utc="2026-08-23T12:00:00+00:00",
+    )
+
+    result = correlate_evidence((archival, current))
+
+    assert result.status == CORRELATION_STATUS_CONFLICT
+    assert "claim:health" in result.conflicts
+    assert result.correlation_gate_passed is False
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    ],
+)
+def test_non_finite_claim_values_fail_closed(value: float) -> None:
+    with pytest.raises(
+        CorrelationError,
+        match="NON_FINITE_CLAIM_VALUE",
+    ):
+        EvidenceClaim("error_rate", value)
+
+
+def test_naive_observed_timestamp_fails_closed() -> None:
+    with pytest.raises(
+        CorrelationError,
+        match="INVALID_OBSERVED_TIMESTAMP",
+    ):
+        observation(
+            "source-a",
+            observed_at_utc="2026-08-23T12:00:00",
+        )
+
+
+def test_naive_provenance_timestamp_fails_closed() -> None:
+    with pytest.raises(
+        CorrelationError,
+        match="INVALID_PROVENANCE_TIMESTAMP",
+    ):
+        provenance(
+            "test:source",
+            retrieved_at_utc="2026-08-23T12:00:00",
+        )

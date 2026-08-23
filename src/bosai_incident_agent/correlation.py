@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
+from math import isfinite
 from typing import Any
 
 CORRELATION_STATUS_CONSISTENT = "CONSISTENT"
@@ -33,6 +35,13 @@ ALLOWED_CONFIDENCE_CLASSES = frozenset(
         "AUTHORIZED_BOUNDED_READ",
         "SOURCE_ASSERTED",
         "UNKNOWN",
+    }
+)
+
+PROPOSAL_ELIGIBLE_CONFIDENCE_CLASSES = frozenset(
+    {
+        "VERIFIED_INTEGRITY",
+        "AUTHORIZED_BOUNDED_READ",
     }
 )
 
@@ -68,12 +77,16 @@ class CorrelationError(RuntimeError):
 
 
 def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise CorrelationError("NON_CANONICAL_VALUE") from exc
 
 
 def _digest(value: Any) -> str:
@@ -94,6 +107,22 @@ def _require_sha256(value: str, error: str) -> None:
         raise CorrelationError(error)
 
 
+def _normalize_timestamp(value: str, error: str) -> str:
+    _require_non_empty_string(value, error)
+
+    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as exc:
+        raise CorrelationError(error) from exc
+
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise CorrelationError(error)
+
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 @dataclass(frozen=True)
 class EvidenceClaim:
     field: str
@@ -107,6 +136,15 @@ class EvidenceClaim:
 
         if not isinstance(self.value, (str, int, float, bool, type(None))):
             raise CorrelationError("INVALID_CLAIM_VALUE_TYPE")
+
+        if self.value is None:
+            raise CorrelationError("NULL_CLAIM_VALUE")
+
+        if isinstance(self.value, str) and not self.value.strip():
+            raise CorrelationError("EMPTY_CLAIM_VALUE")
+
+        if isinstance(self.value, float) and not isfinite(self.value):
+            raise CorrelationError("NON_FINITE_CLAIM_VALUE")
 
     def canonical_value(self) -> str:
         return _canonical_json(self.value)
@@ -133,10 +171,16 @@ class EvidenceProvenance:
             self.provenance_label,
             "INVALID_PROVENANCE_LABEL",
         )
-        _require_non_empty_string(
+        normalized_retrieved_at = _normalize_timestamp(
             self.retrieved_at_utc,
             "INVALID_PROVENANCE_TIMESTAMP",
         )
+        object.__setattr__(
+            self,
+            "retrieved_at_utc",
+            normalized_retrieved_at,
+        )
+
         _require_sha256(
             self.content_digest,
             "INVALID_PROVENANCE_CONTENT_DIGEST",
@@ -194,6 +238,17 @@ class EvidenceObservation:
             "INVALID_NORMALIZED_DIGEST",
         )
 
+        if self.observed_at_utc is not None:
+            normalized_observed_at = _normalize_timestamp(
+                self.observed_at_utc,
+                "INVALID_OBSERVED_TIMESTAMP",
+            )
+            object.__setattr__(
+                self,
+                "observed_at_utc",
+                normalized_observed_at,
+            )
+
         claim_fields = [claim.field for claim in self.claims]
 
         if len(claim_fields) != len(set(claim_fields)):
@@ -233,6 +288,7 @@ class CorrelatedEvidenceSet:
     conflicts: tuple[str, ...]
     stale_sources: tuple[str, ...]
     missing_evidence: tuple[str, ...]
+    temporal_baselines: tuple[str, ...]
     correlation_digest: str
 
     @property
@@ -243,7 +299,11 @@ class CorrelatedEvidenceSet:
         }
 
     @property
-    def human_review_required(self) -> bool:
+    def correlation_gate_passed(self) -> bool:
+        return self.proposal_allowed
+
+    @property
+    def correlation_review_required(self) -> bool:
         return not self.proposal_allowed
 
 
@@ -260,6 +320,50 @@ def _correlation_key(
     return f"incident-conflict:{_digest(incident_ids)}"
 
 
+def _provenance_identity(
+    observation: EvidenceObservation,
+) -> tuple[str, str, str]:
+    return (
+        observation.source_kind,
+        observation.provenance.source_provider,
+        observation.provenance.source_reference,
+    )
+
+
+def _observed_datetime(
+    observation: EvidenceObservation,
+) -> datetime | None:
+    if observation.observed_at_utc is None:
+        return None
+
+    return datetime.fromisoformat(observation.observed_at_utc)
+
+
+def _temporal_relation(
+    left: EvidenceObservation,
+    right: EvidenceObservation,
+) -> str:
+    left_archival = left.freshness_class == "IMMUTABLE_ARCHIVAL_PROOF"
+    right_archival = right.freshness_class == "IMMUTABLE_ARCHIVAL_PROOF"
+
+    if left_archival == right_archival:
+        return "NOT_TEMPORALLY_COMPARABLE"
+
+    archive = left if left_archival else right
+    current = right if left_archival else left
+
+    archive_time = _observed_datetime(archive)
+    current_time = _observed_datetime(current)
+
+    if archive_time is None or current_time is None:
+        return "TEMPORAL_CONTEXT_MISSING"
+
+    if archive_time < current_time:
+        return "TEMPORAL_BASELINE"
+
+    return "INVALID_TEMPORAL_ORDER"
+
+
 def _claim_index(
     observations: tuple[EvidenceObservation, ...],
 ) -> dict[str, list[tuple[str, str]]]:
@@ -273,7 +377,6 @@ def _claim_index(
 
     return indexed
 
-
 def correlate_evidence(
     observations: tuple[EvidenceObservation, ...],
 ) -> CorrelatedEvidenceSet:
@@ -282,13 +385,29 @@ def correlate_evidence(
         missing_evidence = ("SECOND_SOURCE_REQUIRED",)
         conflicts: tuple[str, ...] = ()
         stale_sources: tuple[str, ...] = ()
+        temporal_baselines: tuple[str, ...] = ()
     else:
         source_ids = [observation.source_id for observation in observations]
 
         if len(source_ids) != len(set(source_ids)):
             raise CorrelationError("DUPLICATE_SOURCE_ID")
 
+        provenance_identities = [
+            _provenance_identity(observation)
+            for observation in observations
+        ]
+
+        if len(provenance_identities) != len(set(provenance_identities)):
+            raise CorrelationError("DUPLICATE_PROVENANCE_IDENTITY")
+
+        observations_by_source = {
+            observation.source_id: observation
+            for observation in observations
+        }
+
         conflicts_list: list[str] = []
+        temporal_baselines_list: list[str] = []
+        temporal_missing_list: list[str] = []
 
         incident_ids = {
             observation.incident_id for observation in observations
@@ -315,8 +434,36 @@ def correlate_evidence(
                 for _source_id, canonical_value in values
             }
 
-            if len(distinct_values) > 1:
+            if len(distinct_values) <= 1:
+                continue
+
+            field_conflict = False
+            field_temporal = False
+            field_temporal_missing = False
+
+            for index, (left_source, left_value) in enumerate(values):
+                for right_source, right_value in values[index + 1 :]:
+                    if left_value == right_value:
+                        continue
+
+                    relation = _temporal_relation(
+                        observations_by_source[left_source],
+                        observations_by_source[right_source],
+                    )
+
+                    if relation == "TEMPORAL_BASELINE":
+                        field_temporal = True
+                    elif relation == "TEMPORAL_CONTEXT_MISSING":
+                        field_temporal_missing = True
+                    else:
+                        field_conflict = True
+
+            if field_conflict:
                 conflicts_list.append(f"claim:{field}")
+            elif field_temporal_missing:
+                temporal_missing_list.append(field)
+            elif field_temporal:
+                temporal_baselines_list.append(field)
 
         stale_sources = tuple(
             sorted(
@@ -334,7 +481,51 @@ def correlate_evidence(
             )
         )
 
+        empty_claim_sources = tuple(
+            sorted(
+                observation.source_id
+                for observation in observations
+                if not observation.claims
+            )
+        )
+
+        non_eligible_confidence = tuple(
+            sorted(
+                (
+                    observation.source_id,
+                    observation.confidence_class,
+                )
+                for observation in observations
+                if observation.confidence_class
+                not in PROPOSAL_ELIGIBLE_CONFIDENCE_CLASSES
+            )
+        )
+
         conflicts = tuple(sorted(set(conflicts_list)))
+        temporal_baselines = tuple(
+            sorted(set(temporal_baselines_list))
+        )
+
+        missing_items = [
+            *(
+                f"FRESHNESS_UNKNOWN:{source_id}"
+                for source_id in unknown_freshness
+            ),
+            *(
+                f"NO_INFORMATIVE_CLAIMS:{source_id}"
+                for source_id in empty_claim_sources
+            ),
+            *(
+                "CONFIDENCE_NOT_PROPOSAL_ELIGIBLE:"
+                f"{source_id}:{confidence_class}"
+                for source_id, confidence_class
+                in non_eligible_confidence
+            ),
+            *(
+                f"TEMPORAL_CONTEXT_MISSING:{field}"
+                for field in sorted(set(temporal_missing_list))
+            ),
+        ]
 
         if conflicts:
             status = CORRELATION_STATUS_CONFLICT
@@ -342,12 +533,9 @@ def correlate_evidence(
         elif stale_sources:
             status = CORRELATION_STATUS_STALE
             missing_evidence = ()
-        elif unknown_freshness:
+        elif missing_items:
             status = CORRELATION_STATUS_INSUFFICIENT
-            missing_evidence = tuple(
-                f"FRESHNESS_UNKNOWN:{source_id}"
-                for source_id in unknown_freshness
-            )
+            missing_evidence = tuple(sorted(missing_items))
         else:
             all_field_sets = [
                 {claim.field for claim in observation.claims}
@@ -362,7 +550,7 @@ def correlate_evidence(
 
             status = (
                 CORRELATION_STATUS_CONSISTENT
-                if same_fields
+                if same_fields and not temporal_baselines
                 else CORRELATION_STATUS_COMPLEMENTARY
             )
             missing_evidence = ()
@@ -383,6 +571,7 @@ def correlate_evidence(
                     "provenance_digest": observation.provenance.digest(),
                     "observation_digest": observation.digest(),
                     "freshness_class": observation.freshness_class,
+                    "confidence_class": observation.confidence_class,
                 }
                 for observation in ordered_observations
             ],
@@ -390,6 +579,7 @@ def correlate_evidence(
             "conflicts": list(conflicts),
             "stale_sources": list(stale_sources),
             "missing_evidence": list(missing_evidence),
+            "temporal_baselines": list(temporal_baselines),
         }
     )
 
@@ -400,5 +590,6 @@ def correlate_evidence(
         conflicts=conflicts,
         stale_sources=stale_sources,
         missing_evidence=missing_evidence,
+        temporal_baselines=temporal_baselines,
         correlation_digest=correlation_digest,
     )
